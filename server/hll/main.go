@@ -8,9 +8,9 @@ import (
 )
 
 type HLL struct {
-	p      int
-	n      int
-	m      int
+	p      int //bits of the hash used to choose the bucket
+	n      int //number of registers/buckets in the HLL
+	m      int //number of hash bits we're working with
 	bucket []int
 	alphaM float64
 }
