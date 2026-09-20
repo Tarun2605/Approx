@@ -14,6 +14,18 @@ type CMS struct {
 	table [][]int
 }
 
+func NewCms() (*CMS, error) {
+	op := &CMS{
+		w: 16256,
+		d: 30,
+	}
+	err := op.build()
+	if err != nil {
+		return nil, err
+	}
+	return op, nil
+}
+
 func hashString(s string) (uint64, error) {
 	if len(s) == 0 {
 		return 0, errors.New("empty string not allowed")

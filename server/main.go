@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"server/cms"
 	hll2 "server/hll"
 
 	"github.com/gin-gonic/gin"
@@ -45,9 +46,19 @@ type submitOutput struct {
 	ApproximateCardinality int64 `json:"approximateCardinality"`
 }
 
+type queryOutput struct {
+	Text             string `json:"text"`
+	ApproximateCount int    `json:"approximateCount"`
+}
+
 func main() {
 	router := gin.Default()
 	hll := hll2.NewHLL()
+	cmsSketch, err := cms.NewCms()
+	if err != nil {
+		fmt.Println("Failed to initialise CMS: " + err.Error())
+		return
+	}
 	set := make(map[string]bool)
 	router.POST("/submit", func(c *gin.Context) {
 		var userInput UserInput
@@ -65,30 +76,45 @@ func main() {
 		fmt.Println(userInput.Text)
 		_, err := hll.Add(userInput.Text)
 		if err != nil {
-			Fail(
-				c,
-				http.StatusInternalServerError,
-				"INTERNAL_SERVER_ERROR",
-				err.Error())
+			Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+			return
+		}
+
+		if err := cmsSketch.Add(userInput.Text); err != nil {
+			Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
 			return
 		}
 
 		card, err := hll.GetCardinality()
 		if err != nil {
-			Fail(
-				c,
-				http.StatusInternalServerError,
-				"INTERNAL+SERVER_ERROR",
-				err.Error())
+			Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+			return
 		}
 		set[userInput.Text] = true
 
 		OK(c, submitOutput{
 			ActualCardinality:      int64(len(set)),
-			ApproximateCardinality: card})
+			ApproximateCardinality: card,
+		})
 	})
 
-	err := router.Run(":8080")
+	router.GET("/query", func(c *gin.Context) {
+		text := c.Query("text")
+		if text == "" {
+			Fail(c, http.StatusBadRequest, "MISSING_PARAM", "query parameter 'text' is required")
+			return
+		}
+
+		count, err := cmsSketch.Query(text)
+		if err != nil {
+			Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+			return
+		}
+
+		OK(c, queryOutput{Text: text, ApproximateCount: count})
+	})
+
+	err = router.Run(":8080")
 	if err != nil {
 		fmt.Print("Server crashed" + err.Error())
 		return
