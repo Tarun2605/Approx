@@ -45,7 +45,7 @@ func main() {
 	}
 	gin.SetMode(mode)
 
-	rate, _ := ulimiter.NewRateFromFormatted("10000-S") // 100 req/sec
+	rate, _ := ulimiter.NewRateFromFormatted("1000-S") // 1000 req/sec
 	store := memory.NewStore()
 	lim := ulimiter.New(store, rate)
 
