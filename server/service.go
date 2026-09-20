@@ -6,6 +6,7 @@ import (
 	"server/cms"
 	hll2 "server/hll"
 	"server/misra_gries"
+	"sync"
 )
 
 // ── errors ────────────────────────────────────────────────────────────────────
@@ -45,6 +46,7 @@ func internalErr(cause error) *ServiceError {
 // SketchService owns all three probabilistic data structures and exposes
 // Submit / Query as pure business logic — no HTTP concerns.
 type SketchService struct {
+	mu    sync.RWMutex
 	hll   *hll2.HLL
 	cms   *cms.CMS
 	topK  *misra_gries.MGTopK
@@ -96,6 +98,8 @@ func (s *SketchService) Submit(text string) (*SubmitResult, *ServiceError) {
 		return nil, badInput("text must not be empty")
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if _, err := s.hll.Add(text); err != nil {
 		return nil, internalErr(err)
 	}
@@ -134,6 +138,8 @@ func (s *SketchService) Query(text string) (*QueryResult, *ServiceError) {
 		return nil, badInput("text must not be empty")
 	}
 
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	count, err := s.cms.Query(text)
 	if err != nil {
 		return nil, internalErr(err)
