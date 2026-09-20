@@ -28,5 +28,12 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+
+# Research papers / local documents
+*.pdf
+
+# Build output directories
+tmp/
+**/tmp/
