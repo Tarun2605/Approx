@@ -55,7 +55,7 @@ func main() {
 	router.Use(ginlimiter.NewMiddleware(lim))
 
 	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost"},
+		AllowOrigins:     []string{"http://localhost", "http://localhost:8080"},
 		AllowMethods:     []string{"GET", "POST"},
 		AllowHeaders:     []string{"Content-Type", "Authorization"},
 		AllowCredentials: false,
@@ -72,9 +72,18 @@ func main() {
 	// GET /query?text=<value>
 	router.GET("/query", handleQuery(svc))
 
+	// GET /stats — distinct count + top-K candidates
+	router.GET("/stats", handleStats(svc))
+
+	// GET /memory — probabilistic vs naive memory comparison
+	router.GET("/memory", handleMemoryStats(svc))
+
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+
+	// Serve the frontend from ./static/index.html
+	router.StaticFile("/", "./static/index.html")
 
 	srv := &http.Server{
 		Addr:         ":8080",
@@ -104,8 +113,6 @@ func main() {
 		log.Fatal("forced shutdown:", err)
 	}
 
-	// All in-flight requests have finished. Flush the log buffer and close
-	// the file so no buffered entries are lost on exit.
 	if err := svc.Close(); err != nil {
 		log.Println("close service:", err)
 	}

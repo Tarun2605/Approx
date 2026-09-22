@@ -62,8 +62,7 @@ func handleSubmit(svc *SketchService) gin.HandlerFunc {
 	}
 }
 
-// handleQuery returns the CMS frequency, top-K membership, and candidate list
-// for the requested string.
+// handleQuery returns the CMS frequency estimate for the requested string.
 func handleQuery(svc *SketchService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		text := c.Query("text")
@@ -82,6 +81,30 @@ func handleQuery(svc *SketchService) gin.HandlerFunc {
 			return
 		}
 
+		ok(c, result)
+	}
+}
+
+// handleStats returns the HLL distinct-count estimate and the top-K candidate list.
+func handleStats(svc *SketchService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		result, svcErr := svc.Stats()
+		if svcErr != nil {
+			fail(c, svcErr)
+			return
+		}
+
+		ok(c, result)
+	}
+}
+
+func handleMemoryStats(svc *SketchService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		result, svcErr := svc.MemoryStats()
+		if svcErr != nil {
+			fail(c, svcErr)
+			return
+		}
 		ok(c, result)
 	}
 }

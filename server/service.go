@@ -18,9 +18,6 @@ const logPath = "submit.log"
 
 // ── errors ────────────────────────────────────────────────────────────────────
 
-// ServiceError carries a machine-readable code and a human-readable message.
-// Handlers map it directly to the HTTP error envelope without reconstructing
-// error strings.
 type ServiceError struct {
 	HTTPStatus int
 	Code       string
@@ -47,18 +44,14 @@ func internalErr(cause error) *ServiceError {
 	}
 }
 
-// ── service ───────────────────────────────────────────────────────────────────
-
-// SketchService owns all three probabilistic data structures and exposes
-// Submit / Query as pure business logic — no HTTP concerns.
 type SketchService struct {
-	mu   sync.RWMutex
-	hll  *hll2.HLL
-	cms  *cms.CMS
-	topK *misra_gries.MGTopK
+	mu         sync.RWMutex
+	hll        *hll2.HLL
+	cms        *cms.CMS
+	topK       *misra_gries.MGTopK
+	totalItems int64
+	totalBytes int64
 
-	// logFile is the open O_APPEND file descriptor for persistence.
-	// logBuf batches writes to avoid a syscall per request.
 	logFile *os.File
 	logBuf  *bufio.Writer
 }
@@ -80,37 +73,24 @@ func NewSketchService() (*SketchService, error) {
 		topK: topK,
 	}
 
-	// Replay any previously persisted entries before accepting new requests.
-	// This rebuilds the in-memory sketches from the log file without writing
-	// anything back to disk.
 	if err := svc.replay(); err != nil {
 		return nil, fmt.Errorf("replay log: %w", err)
 	}
 
-	// Open the log file for appending. A separate file descriptor is used here
-	// (vs the one used during replay) because O_RDONLY and O_APPEND cannot be
-	// mixed on the same fd safely.
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open log for writing: %w", err)
 	}
 
 	svc.logFile = f
-	// bufio.Writer accumulates writes in a 4 KB RAM buffer and flushes to the
-	// OS in one syscall when the buffer fills up, instead of one syscall per
-	// request.
 	svc.logBuf = bufio.NewWriter(f)
 
 	return svc, nil
 }
 
-// replay reads the existing log file line by line and feeds each entry into
-// the in-memory sketches. It uses bufio.Scanner so only one line at a time
-// lives in RAM, regardless of file size.
 func (s *SketchService) replay() error {
 	f, err := os.Open(logPath)
 	if errors.Is(err, os.ErrNotExist) {
-		// First boot — no log yet, nothing to replay.
 		return nil
 	}
 	if err != nil {
@@ -125,8 +105,6 @@ func (s *SketchService) replay() error {
 		if line == "" {
 			continue
 		}
-		// ingest directly — bypasses the log write in Submit so entries
-		// are not written back to the file during replay.
 		if err := s.ingest(line); err != nil {
 			return fmt.Errorf("replay line %q: %w", line, err)
 		}
@@ -140,9 +118,6 @@ func (s *SketchService) replay() error {
 	return nil
 }
 
-// ingest updates all data structures in memory. It is the single source of
-// truth for what "adding a string" means. Called by both Submit (live path)
-// and replay (startup path). It does NOT write to the log.
 func (s *SketchService) ingest(text string) error {
 	if _, err := s.hll.Add(text); err != nil {
 		return err
@@ -153,11 +128,11 @@ func (s *SketchService) ingest(text string) error {
 	if _, err := s.topK.Add(text); err != nil {
 		return err
 	}
+	s.totalItems++
+	s.totalBytes += int64(len(text))
 	return nil
 }
 
-// Close flushes the write buffer and closes the log file. Must be called
-// after the HTTP server has shut down and all in-flight requests have finished.
 func (s *SketchService) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -170,33 +145,44 @@ func (s *SketchService) Close() error {
 
 // ── result types ──────────────────────────────────────────────────────────────
 
-// SubmitResult is the structured output of a successful Submit call.
 type SubmitResult struct {
-	ApproximateCardinality int64    `json:"approximateCardinality"`
-	ApproximateTopK        []string `json:"approximateTopK"`
+	ApproximateCardinality int64 `json:"approximateCardinality"`
 }
 
-// QueryResult is the structured output of a successful Query call.
 type QueryResult struct {
-	Text             string   `json:"text"`
-	ApproximateCount int      `json:"approximateCount"`
-	IsTopKCandidate  bool     `json:"isTopKCandidate"`
-	ApproximateTopK  []string `json:"approximateTopK"`
+	Text             string `json:"text"`
+	ApproximateCount int    `json:"approximateCount"`
+}
+
+type StatsResult struct {
+	ApproximateDistinctCount int64    `json:"approximateDistinctCount"`
+	TopK                     []string `json:"topK"`
+}
+
+type MemoryStats struct {
+	HLLBytes        int64 `json:"hllBytes"`
+	CMSBytes        int64 `json:"cmsBytes"`
+	MisraGriesBytes int64 `json:"misraGriesBytes"`
+
+	TotalItemsReceived int64 `json:"totalItemsReceived"`
+	UniqueItemCount    int64 `json:"uniqueItemCount"`
+	AvgStringLenBytes  int64 `json:"avgStringLenBytes"`
+	NaiveEstimateBytes int64 `json:"naiveEstimateBytes"`
 }
 
 // ── methods ───────────────────────────────────────────────────────────────────
 
-// Submit ingests text into all three data structures, persists it to the
-// append-only log, and returns current cardinality and top-K statistics.
 func (s *SketchService) Submit(text string) (*SubmitResult, *ServiceError) {
 	if text == "" {
 		return nil, badInput("text must not be empty")
 	}
-	// Newlines would corrupt the one-entry-per-line log format.
 	if strings.ContainsAny(text, "\n\r") {
 		return nil, badInput("text must not contain newline characters")
 	}
 
+	if len(text) >= 10 {
+		return nil, badInput("text must be less than 10 characters")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -204,11 +190,11 @@ func (s *SketchService) Submit(text string) (*SubmitResult, *ServiceError) {
 		return nil, internalErr(err)
 	}
 
-	// Write to log after a successful ingest. If the write fails the entry is
-	// already reflected in the in-memory sketches for this session — we surface
-	// the error but do not roll back (approximate structures tolerate this).
 	if _, err := fmt.Fprintf(s.logBuf, "%s\n", text); err != nil {
 		return nil, internalErr(fmt.Errorf("write to log: %w", err))
+	}
+	if err := s.logBuf.Flush(); err != nil {
+		return nil, internalErr(fmt.Errorf("flush log: %w", err))
 	}
 
 	card, err := s.hll.GetCardinality()
@@ -216,19 +202,11 @@ func (s *SketchService) Submit(text string) (*SubmitResult, *ServiceError) {
 		return nil, internalErr(err)
 	}
 
-	topKEntries, err := s.topK.ListEntries()
-	if err != nil {
-		return nil, internalErr(err)
-	}
-
 	return &SubmitResult{
 		ApproximateCardinality: card,
-		ApproximateTopK:        topKEntries,
 	}, nil
 }
 
-// Query returns the CMS frequency estimate for text, whether it is a current
-// top-K candidate, and the full candidate list.
 func (s *SketchService) Query(text string) (*QueryResult, *ServiceError) {
 	if text == "" {
 		return nil, badInput("text must not be empty")
@@ -242,23 +220,55 @@ func (s *SketchService) Query(text string) (*QueryResult, *ServiceError) {
 		return nil, internalErr(err)
 	}
 
+	return &QueryResult{
+		Text:             text,
+		ApproximateCount: count,
+	}, nil
+}
+
+func (s *SketchService) Stats() (*StatsResult, *ServiceError) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	card, err := s.hll.GetCardinality()
+	if err != nil {
+		return nil, internalErr(err)
+	}
+
 	topKEntries, err := s.topK.ListEntries()
 	if err != nil {
 		return nil, internalErr(err)
 	}
 
-	isTopK := false
-	for _, entry := range topKEntries {
-		if entry == text {
-			isTopK = true
-			break
-		}
+	return &StatsResult{
+		ApproximateDistinctCount: card,
+		TopK:                     topKEntries,
+	}, nil
+}
+
+func (s *SketchService) MemoryStats() (*MemoryStats, *ServiceError) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var avgLen int64
+	if s.totalItems > 0 {
+		avgLen = s.totalBytes / s.totalItems
 	}
 
-	return &QueryResult{
-		Text:             text,
-		ApproximateCount: count,
-		IsTopKCandidate:  isTopK,
-		ApproximateTopK:  topKEntries,
+	card, err := s.hll.GetCardinality()
+	if err != nil {
+		return nil, internalErr(err)
+	}
+
+	naiveBytes := card * 2 * (128 + avgLen + 8)
+
+	return &MemoryStats{
+		HLLBytes:           int64(1<<14) * 8,
+		CMSBytes:           int64(30*16256)*8 + int64(30)*8,
+		MisraGriesBytes:    int64(len(s.topK.Counter)) * (128 + avgLen + 8),
+		TotalItemsReceived: s.totalItems,
+		UniqueItemCount:    card,
+		AvgStringLenBytes:  avgLen,
+		NaiveEstimateBytes: naiveBytes,
 	}, nil
 }

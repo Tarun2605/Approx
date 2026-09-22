@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Approx</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      background: #f5f5f5;
+      color: #111;
+      padding: 2rem 1rem;
+    }
+
+    h1 { font-size: 1.3rem; font-weight: 600; margin-bottom: 0.25rem; }
+
+    header p {
+      color: #666;
+      font-size: 0.85rem;
+      margin-bottom: 2rem;
+    }
+
+    /* Two-column layout: left = forms+stats, right = memory */
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr 280px;
+      gap: 1rem;
+      max-width: 900px;
+      margin: 0 auto;
+      align-items: start;
+    }
+
+    .left { display: flex; flex-direction: column; gap: 1rem; }
+
+    section {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 1.25rem;
+    }
+
+    section h2 {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #888;
+      margin-bottom: 0.75rem;
+    }
+
+    .row { display: flex; gap: 0.5rem; }
+
+    input[type="text"] {
+      flex: 1;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      padding: 0.45rem 0.7rem;
+      font-size: 0.9rem;
+      outline: none;
+    }
+
+    input[type="text"]:focus { border-color: #555; }
+
+    button {
+      background: #111;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      padding: 0.45rem 1rem;
+      font-size: 0.875rem;
+      cursor: pointer;
+    }
+
+    button:hover { background: #333; }
+
+    button.ghost {
+      background: transparent;
+      color: #555;
+      border: 1px solid #ccc;
+    }
+
+    button.ghost:hover { background: #f0f0f0; }
+
+    .result {
+      margin-top: 0.75rem;
+      font-size: 0.875rem;
+      color: #444;
+      min-height: 1.25rem;
+    }
+
+    .result.error { color: #c00; }
+
+    .stats-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+
+    .distinct { font-size: 0.875rem; color: #444; margin-bottom: 1rem; }
+    .distinct strong { color: #111; }
+
+    .topk-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #888;
+      margin-bottom: 0.5rem;
+    }
+
+    ol { padding-left: 1.4rem; display: flex; flex-direction: column; gap: 0.3rem; }
+    ol li { font-size: 0.875rem; color: #222; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .empty { color: #aaa; font-size: 0.85rem; font-style: italic; }
+
+    /* ── Memory panel (right column) ─────────────────────── */
+    .memory {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 1.25rem;
+      font-size: 0.8rem;
+      position: sticky;
+      top: 1rem;
+    }
+
+    .memory h2 {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #888;
+      margin-bottom: 1rem;
+    }
+
+    .mem-group { margin-bottom: 1rem; }
+
+    .mem-group-title {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #bbb;
+      margin-bottom: 0.4rem;
+    }
+
+    .mem-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 0.25rem 0;
+      border-bottom: 1px solid #f0f0f0;
+      gap: 0.5rem;
+    }
+
+    .mem-row:last-child { border-bottom: none; }
+
+    .mem-label { color: #555; flex: 1; }
+
+    .mem-value {
+      font-family: monospace;
+      font-size: 0.8rem;
+      color: #111;
+      white-space: nowrap;
+    }
+
+    .mem-savings {
+      margin-top: 0.75rem;
+      padding: 0.6rem 0.75rem;
+      background: #f5f5f5;
+      border-radius: 5px;
+      font-size: 0.8rem;
+      color: #444;
+      text-align: center;
+    }
+
+    .mem-savings strong { color: #111; font-size: 1rem; }
+  </style>
+</head>
+<body>
+<header style="max-width:900px;margin:0 auto 2rem;">
+  <h1>Approx</h1>
+  <p>HyperLogLog · Count-Min Sketch · Misra-Gries</p>
+</header>
+
+<div class="layout">
+  <div class="left">
+
+    <!-- Submit -->
+    <section>
+      <h2>Submit</h2>
+      <div class="row">
+        <input id="submit-input" type="text" placeholder="Enter a string (max 9 chars)" />
+        <button id="submit-btn">Add</button>
+      </div>
+      <div id="submit-result" class="result"></div>
+    </section>
+
+    <!-- Query -->
+    <section>
+      <h2>Query frequency</h2>
+      <div class="row">
+        <input id="query-input" type="text" placeholder="String to look up" />
+        <button id="query-btn">Query</button>
+      </div>
+      <div id="query-result" class="result"></div>
+    </section>
+
+    <!-- Stats -->
+    <section>
+      <div class="stats-header">
+        <h2 style="margin:0">Stats</h2>
+        <button class="ghost" id="stats-btn">Refresh</button>
+      </div>
+      <div class="distinct">
+        Approximate distinct strings: <strong id="distinct-count">—</strong>
+      </div>
+      <div class="topk-label">Top-K candidates</div>
+      <ol id="topk-list"><li class="empty">No data yet</li></ol>
+    </section>
+
+  </div>
+
+  <!-- Memory panel -->
+  <aside class="memory">
+    <h2>Memory</h2>
+
+    <div class="mem-group">
+      <div class="mem-group-title">Probabilistic (fixed)</div>
+      <div class="mem-row"><span class="mem-label">HLL</span><span class="mem-value" id="m-hll">—</span></div>
+      <div class="mem-row"><span class="mem-label">Count-Min Sketch</span><span class="mem-value" id="m-cms">—</span></div>
+      <div class="mem-row"><span class="mem-label">Misra-Gries</span><span class="mem-value" id="m-mg">—</span></div>
+    </div>
+
+    <div class="mem-group">
+      <div class="mem-group-title">Stream info</div>
+      <div class="mem-row"><span class="mem-label">Total items</span><span class="mem-value" id="m-total">—</span></div>
+      <div class="mem-row"><span class="mem-label">Unique (est.)</span><span class="mem-value" id="m-unique">—</span></div>
+      <div class="mem-row"><span class="mem-label">Avg string len</span><span class="mem-value" id="m-avglen">—</span></div>
+    </div>
+
+    <div class="mem-group">
+      <div class="mem-group-title">Naive equivalent</div>
+      <div class="mem-row"><span class="mem-label">map[string]bool + map[string]int</span><span class="mem-value" id="m-naive">—</span></div>
+    </div>
+
+    <div class="mem-savings" id="m-savings">Submit some strings to see the comparison.</div>
+  </aside>
+</div>
+
+<script>
+  const API = 'http://localhost:8080';
+
+  async function call(path, opts = {}) {
+    const res = await fetch(API + path, opts);
+    const json = await res.json();
+    if (!json.success) throw new Error(json.error?.message ?? 'error');
+    return json.data;
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function setResult(id, msg, err = false) {
+    const el = document.getElementById(id);
+    el.textContent = msg;
+    el.className = 'result' + (err ? ' error' : '');
+  }
+
+  function fmtBytes(b) {
+    if (b === 0) return '0 B';
+    if (b < 1024) return b + ' B';
+    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+    return (b / (1024 * 1024)).toFixed(2) + ' MB';
+  }
+
+  // Submit
+  document.getElementById('submit-btn').addEventListener('click', async () => {
+    const text = document.getElementById('submit-input').value.trim();
+    if (!text) return setResult('submit-result', 'Please enter a string.', true);
+    try {
+      const d = await call('/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      setResult('submit-result',
+        `Added. Approximate distinct count: ${d.approximateCardinality.toLocaleString()}`);
+      fetchStats();
+      fetchMemory();
+    } catch (e) { setResult('submit-result', e.message, true); }
+  });
+
+  document.getElementById('submit-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('submit-btn').click();
+  });
+
+  // Query
+  document.getElementById('query-btn').addEventListener('click', async () => {
+    const text = document.getElementById('query-input').value.trim();
+    if (!text) return setResult('query-result', 'Please enter a string.', true);
+    try {
+      const d = await call('/query?text=' + encodeURIComponent(text));
+      setResult('query-result',
+        `"${text}" submitted approximately ${d.approximateCount.toLocaleString()} time${d.approximateCount === 1 ? '' : 's'}.`);
+    } catch (e) { setResult('query-result', e.message, true); }
+  });
+
+  document.getElementById('query-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('query-btn').click();
+  });
+
+  // Stats
+  async function fetchStats() {
+    try {
+      const d = await call('/stats');
+      document.getElementById('distinct-count').textContent =
+        d.approximateDistinctCount.toLocaleString();
+      const list = document.getElementById('topk-list');
+      const entries = (d.topK ?? []).slice().sort((a, b) => a.localeCompare(b));
+      if (!entries.length) {
+        list.innerHTML = '<li class="empty">No candidates yet</li>';
+        return;
+      }
+      list.innerHTML = entries.map(e => `<li>${esc(e)}</li>`).join('');
+    } catch (e) { console.warn('stats:', e.message); }
+  }
+
+  // Memory
+  async function fetchMemory() {
+    try {
+      const d = await call('/memory');
+
+      const probTotal = d.hllBytes + d.cmsBytes + d.misraGriesBytes;
+
+      document.getElementById('m-hll').textContent    = fmtBytes(d.hllBytes);
+      document.getElementById('m-cms').textContent    = fmtBytes(d.cmsBytes);
+      document.getElementById('m-mg').textContent     = fmtBytes(d.misraGriesBytes);
+      document.getElementById('m-total').textContent  = d.totalItemsReceived.toLocaleString();
+      document.getElementById('m-unique').textContent = d.uniqueItemCount.toLocaleString();
+      document.getElementById('m-avglen').textContent = d.avgStringLenBytes + ' B';
+      document.getElementById('m-naive').textContent  = fmtBytes(d.naiveEstimateBytes);
+
+      const savings = document.getElementById('m-savings');
+      if (d.naiveEstimateBytes > 0) {
+        const ratio = (d.naiveEstimateBytes / probTotal).toFixed(1);
+        savings.innerHTML =
+          `Probabilistic uses <strong>${fmtBytes(probTotal)}</strong> vs ` +
+          `naive <strong>${fmtBytes(d.naiveEstimateBytes)}</strong> &mdash; ` +
+          `<strong>${ratio}×</strong> less memory`;
+      } else {
+        savings.textContent = 'Submit some strings to see the comparison.';
+      }
+    } catch (e) { console.warn('memory:', e.message); }
+  }
+
+  document.getElementById('stats-btn').addEventListener('click', fetchStats);
+
+  setInterval(fetchStats,  20000);
+  setInterval(fetchMemory, 20000);
+
+  fetchStats();
+  fetchMemory();
+</script>
+</body>
+</html>
