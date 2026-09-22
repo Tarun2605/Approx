@@ -103,5 +103,12 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatal("forced shutdown:", err)
 	}
+
+	// All in-flight requests have finished. Flush the log buffer and close
+	// the file so no buffered entries are lost on exit.
+	if err := svc.Close(); err != nil {
+		log.Println("close service:", err)
+	}
+
 	fmt.Println("server exited")
 }
