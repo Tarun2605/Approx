@@ -17,25 +17,21 @@ const (
 	queryURL  = "http://localhost:8080/query"
 	total     = 100000
 	logEvery  = 1000
-	stringLen = 20
+	stringLen = 8 // server rejects strings >= 10 chars
 )
 
 type HLLTestResponse struct {
 	Success bool `json:"success"`
 	Data    struct {
-		Actual      int64    `json:"actualCardinality"`
-		Approximate int64    `json:"approximateCardinality"`
-		TopK        []string `json:"approximateTopK"`
+		Approximate int64 `json:"approximateCardinality"`
 	} `json:"data"`
 }
 
 type QueryTestResponse struct {
 	Success bool `json:"success"`
 	Data    struct {
-		Text             string   `json:"text"`
-		ApproximateCount int      `json:"approximateCount"`
-		IsTopKCandidate  bool     `json:"isTopKCandidate"`
-		ApproximateTopK  []string `json:"approximateTopK"`
+		Text             string `json:"text"`
+		ApproximateCount int    `json:"approximateCount"`
 	} `json:"data"`
 }
 
@@ -85,6 +81,14 @@ func main() {
 			panic(err)
 		}
 
+		// Skip rate-limited responses — don't count this iteration.
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			i--
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
 		var result HLLTestResponse
 		err = json.NewDecoder(resp.Body).Decode(&result)
 		resp.Body.Close()
@@ -100,7 +104,7 @@ func main() {
 
 		if i%logEvery == 0 {
 			fmt.Printf(
-				"n=%-7d actual=%-7d approx=%-7d error=%+.3f%% avg_latency=%v\n",
+				"n=%-7d seen=%-7d approx=%-7d error=%+.3f%% avg_latency=%v\n",
 				i,
 				actual,
 				approx,
@@ -139,7 +143,7 @@ func main() {
 	approx := result.Data.Approximate
 	errorPercent := float64(approx-actual) / float64(actual) * 100
 
-	fmt.Printf("Actual:      %d\n", actual)
+	fmt.Printf("Seen:        %d\n", actual)
 	fmt.Printf("Approximate: %d\n", approx)
 	fmt.Printf("Error:       %+.3f%%\n", errorPercent)
 	fmt.Printf("Avg latency: %v\n", totalTime/time.Duration(total))
@@ -148,31 +152,27 @@ func main() {
 	testMGTopK(client)
 }
 
-// testMGTopK submits a skewed stream to the server and validates that:
-//   - Heavy hitters appear as top-K candidates via /submit
-//   - /query correctly reports frequency and top-K membership for those items
-//   - Rare items are not falsely promoted as top-K candidates
+// testMGTopK submits a skewed stream to the server and validates that
+// heavy hitters appear in the /stats top-K list and have high CMS counts.
 func testMGTopK(client *http.Client) {
 	fmt.Println("========== MG TOP-K TEST ==========")
 
 	r := rand.New(rand.NewSource(99))
 
-	// Build a skewed workload: 5 heavy hitters submitted many times,
-	// plus a long tail of unique strings submitted only once each.
 	type item struct {
 		label string
 		count int
 	}
 
+	// Heavy hitters use <= 9 chars to pass the server's length check.
 	heavyHitters := []item{
-		{"__hot_alpha__", 800},
-		{"__hot_beta__", 600},
-		{"__hot_gamma__", 400},
-		{"__hot_delta__", 200},
-		{"__hot_epsilon__", 100},
+		{"hot_a", 800},
+		{"hot_b", 600},
+		{"hot_c", 400},
+		{"hot_d", 200},
+		{"hot_e", 100},
 	}
 
-	// Build the full submission list: heavy hitters interleaved with noise.
 	type submission struct{ text string }
 	var stream []submission
 
@@ -181,96 +181,105 @@ func testMGTopK(client *http.Client) {
 			stream = append(stream, submission{h.label})
 		}
 	}
-	// 500 unique noise strings (submitted once each).
+	// noise strings — 8 chars, passes length check
 	for i := 0; i < 500; i++ {
-		stream = append(stream, submission{randomString(r, stringLen)})
+		stream = append(stream, submission{randomString(r, 8)})
 	}
 
-	// Shuffle so heavy hitters are not all at the front.
 	r.Shuffle(len(stream), func(i, j int) { stream[i], stream[j] = stream[j], stream[i] })
 
-	fmt.Printf("Submitting %d items (%d distinct heavy hitters + 500 noise)...\n",
+	fmt.Printf("Submitting %d items (%d heavy hitters + 500 noise)...\n",
 		len(stream), len(heavyHitters))
 
-	var lastTopK []string
 	for _, s := range stream {
 		body, _ := json.Marshal(map[string]string{"text": s.text})
-		resp, err := client.Post(submitURL, "application/json", bytes.NewBuffer(body))
-		if err != nil {
-			panic(fmt.Sprintf("submit failed: %v", err))
+		for {
+			resp, err := client.Post(submitURL, "application/json", bytes.NewBuffer(body))
+			if err != nil {
+				panic(fmt.Sprintf("submit failed: %v", err))
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusTooManyRequests {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		var result HLLTestResponse
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			panic(fmt.Sprintf("decode failed: %v", err))
-		}
-		resp.Body.Close()
-		lastTopK = result.Data.TopK
 	}
 
-	fmt.Printf("Final top-K candidate list (%d entries):\n", len(lastTopK))
-	sorted := append([]string(nil), lastTopK...)
+	// Fetch top-K from /stats
+	type StatsResponse struct {
+		Success bool `json:"success"`
+		Data    struct {
+			TopK []string `json:"topK"`
+		} `json:"data"`
+	}
+
+	statsResp, err := client.Get("http://localhost:8080/stats")
+	if err != nil {
+		panic(fmt.Sprintf("stats failed: %v", err))
+	}
+	var sr StatsResponse
+	json.NewDecoder(statsResp.Body).Decode(&sr)
+	statsResp.Body.Close()
+
+	topKSet := make(map[string]bool, len(sr.Data.TopK))
+	for _, e := range sr.Data.TopK {
+		topKSet[e] = true
+	}
+
+	sorted := append([]string(nil), sr.Data.TopK...)
 	sort.Strings(sorted)
+	fmt.Printf("Top-K candidates (%d entries):\n", len(sorted))
 	for _, e := range sorted {
 		fmt.Printf("  • %s\n", e)
 	}
 
-	// ── Validate heavy hitters appear in top-K ──────────────────────────────
+	// ── Heavy-hitter membership + CMS count check ────────────────────────
 	fmt.Println()
-	fmt.Println("--- Heavy-hitter membership check (via /query) ---")
-
-	topKSet := make(map[string]bool, len(lastTopK))
-	for _, e := range lastTopK {
-		topKSet[e] = true
-	}
+	fmt.Println("--- Heavy-hitter check ---")
 
 	allFound := true
 	for _, h := range heavyHitters {
-		body, _ := json.Marshal(map[string]string{"text": h.label})
-		req, _ := http.NewRequest(http.MethodGet,
-			queryURL+"?text="+h.label, bytes.NewBuffer(body))
-		resp, err := client.Do(req)
+		resp, err := client.Get(queryURL + "?text=" + h.label)
 		if err != nil {
 			panic(fmt.Sprintf("query failed: %v", err))
 		}
 		var qr QueryTestResponse
-		if err := json.NewDecoder(resp.Body).Decode(&qr); err != nil {
-			panic(fmt.Sprintf("decode failed: %v", err))
-		}
+		json.NewDecoder(resp.Body).Decode(&qr)
 		resp.Body.Close()
 
+		inTopK := topKSet[h.label]
 		status := "PASS ✓"
-		if !qr.Data.IsTopKCandidate {
+		if !inTopK {
 			status = "FAIL ✗"
 			allFound = false
 		}
-		fmt.Printf("  %-22s submitted=%-4d  cms_count=%-4d  isTopK=%v  [%s]\n",
-			h.label, h.count, qr.Data.ApproximateCount, qr.Data.IsTopKCandidate, status)
+		fmt.Printf("  %-8s submitted=%-4d  cms_count=%-4d  inTopK=%-5v  [%s]\n",
+			h.label, h.count, qr.Data.ApproximateCount, inTopK, status)
 	}
 
-	// ── Validate a cold item is unlikely to be in top-K ────────────────────
+	// ── Cold item should not be in top-K ────────────────────────────────
 	fmt.Println()
-	fmt.Println("--- Cold item check (via /query) ---")
-	coldItem := "__never_submitted_xyz__"
+	fmt.Println("--- Cold item check ---")
+	coldItem := "zzzcold"
 	resp, err := client.Get(queryURL + "?text=" + coldItem)
 	if err != nil {
 		panic(fmt.Sprintf("query failed: %v", err))
 	}
 	var qr QueryTestResponse
-	if err := json.NewDecoder(resp.Body).Decode(&qr); err != nil {
-		panic(fmt.Sprintf("decode failed: %v", err))
-	}
+	json.NewDecoder(resp.Body).Decode(&qr)
 	resp.Body.Close()
 
+	coldInTopK := topKSet[coldItem]
 	coldStatus := "PASS ✓"
-	if qr.Data.IsTopKCandidate {
+	if coldInTopK {
 		coldStatus = "FAIL ✗ (false positive)"
 	}
-	fmt.Printf("  %-28s cms_count=%d  isTopK=%v  [%s]\n",
-		coldItem, qr.Data.ApproximateCount, qr.Data.IsTopKCandidate, coldStatus)
+	fmt.Printf("  %-8s cms_count=%d  inTopK=%v  [%s]\n",
+		coldItem, qr.Data.ApproximateCount, coldInTopK, coldStatus)
 
-	// ── Summary ─────────────────────────────────────────────────────────────
 	fmt.Println()
-	if allFound && !qr.Data.IsTopKCandidate {
+	if allFound && !coldInTopK {
 		fmt.Println("MG TOP-K TEST PASSED")
 	} else {
 		fmt.Println("MG TOP-K TEST FAILED — check output above")

@@ -190,13 +190,6 @@ func (s *SketchService) Submit(text string) (*SubmitResult, *ServiceError) {
 		return nil, internalErr(err)
 	}
 
-	if _, err := fmt.Fprintf(s.logBuf, "%s\n", text); err != nil {
-		return nil, internalErr(fmt.Errorf("write to log: %w", err))
-	}
-	if err := s.logBuf.Flush(); err != nil {
-		return nil, internalErr(fmt.Errorf("flush log: %w", err))
-	}
-
 	card, err := s.hll.GetCardinality()
 	if err != nil {
 		return nil, internalErr(err)
