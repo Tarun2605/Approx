@@ -38,4 +38,4 @@ go.work.sum
 tmp/
 **/tmp/
 
-LightsailDefaultKey-ap-south-1.pem
+server/LightsailDefaultKey-ap-south-1.pem
