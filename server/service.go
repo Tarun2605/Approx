@@ -180,8 +180,8 @@ func (s *SketchService) Submit(text string) (*SubmitResult, *ServiceError) {
 		return nil, badInput("text must not contain newline characters")
 	}
 
-	if len(text) >= 10 {
-		return nil, badInput("text must be less than 10 characters")
+	if len(text) >= 20 {
+		return nil, badInput("text must be less than 20 characters")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -17,7 +17,7 @@ const (
 	queryURL  = "http://localhost:8080/query"
 	total     = 100000
 	logEvery  = 1000
-	stringLen = 8 // server rejects strings >= 10 chars
+	stringLen = 18 // server rejects strings >= 20 chars
 )
 
 type HLLTestResponse struct {
