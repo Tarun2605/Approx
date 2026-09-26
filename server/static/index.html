@@ -252,7 +252,7 @@
 </div>
 
 <script>
-  const API = 'http://localhost:8080';
+  const API = '';
 
   async function call(path, opts = {}) {
     const res = await fetch(API + path, opts);
@@ -289,7 +289,7 @@
         body: JSON.stringify({ text }),
       });
       setResult('submit-result',
-        `Added. Approximate distinct count: ${d.approximateCardinality.toLocaleString()}`);
+        `Added.`);
       fetchStats();
       fetchMemory();
     } catch (e) { setResult('submit-result', e.message, true); }

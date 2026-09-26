@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -55,7 +56,7 @@ func main() {
 	router.Use(ginlimiter.NewMiddleware(lim))
 
 	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost", "http://localhost:8080"},
+		AllowOrigins:     allowedOrigins(),
 		AllowMethods:     []string{"GET", "POST"},
 		AllowHeaders:     []string{"Content-Type", "Authorization"},
 		AllowCredentials: false,
@@ -118,4 +119,21 @@ func main() {
 	}
 
 	fmt.Println("server exited")
+}
+
+// allowedOrigins reads ALLOWED_ORIGINS env var (comma-separated).
+// Falls back to localhost defaults when not set (dev mode).
+func allowedOrigins() []string {
+	raw := os.Getenv("ALLOWED_ORIGINS")
+	if raw == "" {
+		return []string{"http://localhost", "http://localhost:8080"}
+	}
+	var origins []string
+	for _, o := range strings.Split(raw, ",") {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			origins = append(origins, o)
+		}
+	}
+	return origins
 }
